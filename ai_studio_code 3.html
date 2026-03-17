@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>폭발하는 탁상 타이머</title>
+    <style>
+        :root { --bg-color: #ffffff; --accent-color: #e74c3c; --text-color: #2c3e50; --start-color: #2ecc71; }
+        body { background: var(--bg-color); display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: 'Pretendard', sans-serif; margin: 0; overflow: hidden; }
+
+        /* 아날로그 시계 영역 */
+        .clock-container { position: relative; width: 300px; height: 300px; margin-bottom: 20px; z-index: 10; }
+        .clock-face { 
+            width: 100%; height: 100%; border: 8px solid #f8f8f8; 
+            border-radius: 50%; background: #fff; position: relative; box-sizing: border-box;
+        }
+        
+        /* 애니메이션 효과 */
+        @keyframes heartbeat {
+            0% { transform: scale(1); }
+            15% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+        .pulse-effect { animation: heartbeat 0.4s ease-out; }
+
+        /* 게이지 & 바늘 */
+        .timer-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: rotate(-90deg); pointer-events: none; }
+        .timer-svg circle { fill: none; stroke-width: 8; stroke: var(--accent-color); stroke-linecap: round; }
+        .hand { position: absolute; bottom: 50%; left: 50%; transform-origin: bottom; border-radius: 10px; z-index: 5; }
+        .minute-hand { width: 6px; height: 85px; background: #34495e; margin-left: -3px; transition: transform 0.3s ease-out; }
+        .second-hand { width: 2px; height: 115px; background: var(--accent-color); margin-left: -1px; z-index: 6; transition: transform 0.1s linear; }
+        .clock-face::after { content: ''; width: 12px; height: 12px; background: #34495e; border-radius: 50%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 10; }
+
+        .no-transition { transition: none !important; }
+
+        /* 파편(Debris) 스타일 */
+        .debris {
+            position: absolute;
+            pointer-events: none;
+            z-index: 5;
+            transition: transform 1.2s cubic-bezier(0.22, 1, 0.36, 1), opacity 1s;
+        }
+
+        /* 디지털 시계 */
+        .digital-display { display: flex; align-items: center; justify-content: center; font-size: 3.5rem; font-weight: 800; color: var(--text-color); margin-top: 10px; z-index: 20; position: relative; }
+        .digital-display input { width: 85px; border: none; background: transparent; text-align: center; font-size: 3.5rem; font-weight: 800; outline: none; color: inherit; cursor: pointer; padding: 0; }
+        .urgent { color: var(--accent-color) !important; }
+
+        /* 폭발 플래시 */
+        #flash {
+            position: fixed; top:0; left:0; width:100%; height:100%; background: white;
+            opacity: 0; pointer-events: none; z-index: 100;
+        }
+
+        /* 하단 제어 버튼 */
+        .controls-area { margin-top: 40px; height: 60px; display: flex; align-items: center; justify-content: center; width: 100%; z-index: 20; }
+        button.main-btn { border: none; border-radius: 30px; color: white; cursor: pointer; font-size: 1.1rem; font-weight: bold; transition: all 0.2s; }
+        #start-btn { width: 140px; height: 50px; background: var(--start-color); }
+        .running-btns { display: none; gap: 15px; }
+        #pause-btn { width: 110px; height: 50px; background: #f39c12; }
+        #stop-btn { width: 110px; height: 50px; background: #bdc3c7; color: #333; }
+        button:hover { filter: brightness(1.1); transform: translateY(-2px); }
+    </style>
+</head>
+<body>
+
+    <div id="flash"></div>
+
+    <div id="main-clock" class="clock-container">
+        <div id="clock-piece" class="clock-face">
+            <div id="min-hand" class="hand minute-hand"></div>
+            <div id="sec-hand" class="hand second-hand"></div>
+        </div>
+        <svg class="timer-svg">
+            <circle id="progress-circle" cx="150" cy="150" r="142"></circle>
+        </svg>
+    </div>
+
+    <div id="digital-area" class="digital-display">
+        <input type="text" id="input-min" value="00" maxlength="2">
+        <span>:</span>
+        <input type="text" id="input-sec" value="00" maxlength="2">
+    </div>
+
+    <div class="controls-area">
+        <button id="start-btn" class="main-btn" onclick="startTimer()">START</button>
+        <div id="running-btns" class="running-btns">
+            <button id="pause-btn" class="main-btn" onclick="pauseTimer()">PAUSE</button>
+            <button id="stop-btn" class="main-btn" onclick="stopTimer()">STOP</button>
+        </div>
+    </div>
+
+    <script>
+        let timeLeft = 0;
+        let totalTime = 0;
+        let timerInterval = null;
+        let isPaused = false;
+
+        const mainClock = document.getElementById('main-clock');
+        const clockPiece = document.getElementById('clock-piece');
+        const digitalArea = document.getElementById('digital-area');
+        const minInput = document.getElementById('input-min');
+        const secInput = document.getElementById('input-sec');
+        const minHand = document.getElementById('min-hand');
+        const secHand = document.getElementById('sec-hand');
+        const progressCircle = document.getElementById('progress-circle');
+        const startBtn = document.getElementById('start-btn');
+        const runningBtns = document.getElementById('running-btns');
+        const pauseBtn = document.getElementById('pause-btn');
+        const flash = document.getElementById('flash');
+
+        const radius = progressCircle.r.baseVal.value;
+        const circumference = 2 * Math.PI * radius;
+        progressCircle.style.strokeDasharray = circumference;
+
+        // --- 숫자 입력 및 휠 ---
+        [minInput, secInput].forEach(input => {
+            input.addEventListener('click', () => input.select());
+            input.addEventListener('input', () => {
+                input.value = input.value.replace(/[^0-9]/g, '');
+                updateUI(false);
+            });
+            input.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                let current = parseInt(input.value) || 0;
+                e.deltaY < 0 ? current++ : current--;
+                if (current < 0) current = 0;
+                if (input === secInput && current > 59) current = 59;
+                input.value = String(current).padStart(2, '0');
+                updateUI(false);
+            });
+        });
+
+        function updateUI(useTransition = true) {
+            const m = parseInt(minInput.value) || 0;
+            const s = parseInt(secInput.value) || 0;
+            const currentTime = (m * 60) + s;
+
+            if (!useTransition) {
+                minHand.classList.add('no-transition');
+                secHand.classList.add('no-transition');
+                progressCircle.style.transition = 'none';
+            } else {
+                minHand.classList.remove('no-transition');
+                secHand.classList.remove('no-transition');
+                progressCircle.style.transition = 'stroke-dashoffset 1s linear';
+            }
+
+            minHand.style.transform = `rotate(${(m * 6) + (s * 0.1)}deg)`;
+            secHand.style.transform = `rotate(${s * 6}deg)`;
+
+            if (totalTime > 0) {
+                const offset = circumference - (currentTime / totalTime) * circumference;
+                progressCircle.style.strokeDashoffset = offset;
+            } else {
+                progressCircle.style.strokeDashoffset = circumference;
+            }
+        }
+
+        // --- 폭발 애니메이션 로직 ---
+        function explode() {
+            // 1. 플래시 효과
+            flash.style.opacity = '1';
+            setTimeout(() => flash.style.opacity = '0', 200);
+
+            // 2. 본체 숨기기
+            mainClock.style.visibility = 'hidden';
+
+            // 3. 파편 생성
+            const colors = ['#f8f8f8', '#34495e', '#e74c3c', '#bdc3c7', '#2c3e50'];
+            for (let i = 0; i < 45; i++) {
+                const debris = document.createElement('div');
+                debris.className = 'debris';
+                
+                // 무작위 크기와 모양
+                const size = Math.random() * 15 + 5;
+                debris.style.width = size + 'px';
+                debris.style.height = (Math.random() > 0.5 ? size : size/3) + 'px';
+                debris.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+                debris.style.borderRadius = Math.random() > 0.7 ? '50%' : '2px';
+                
+                // 초기 위치 (시계 중앙)
+                const rect = mainClock.getBoundingClientRect();
+                const startX = rect.left + rect.width / 2;
+                const startY = rect.top + rect.height / 2;
+                debris.style.left = startX + 'px';
+                debris.style.top = startY + 'px';
+                
+                document.body.appendChild(debris);
+
+                // 폭발 궤적 계산
+                const angle = Math.random() * Math.PI * 2;
+                const velocity = Math.random() * 400 + 200;
+                const tx = Math.cos(angle) * velocity;
+                const ty = Math.sin(angle) * velocity - 100; // 위로 더 솟구치게
+                const rot = Math.random() * 1000 - 500;
+
+                // 애니메이션 실행 후 디지털 시계 근처로 낙하
+                requestAnimationFrame(() => {
+                    const finalY = digitalArea.getBoundingClientRect().top - (Math.random() * 40 + 20);
+                    const finalX = (window.innerWidth / 2) + (Math.random() * 300 - 150);
+                    
+                    debris.style.transform = `translate(${tx}px, ${ty}px) rotate(${rot}deg)`;
+                    
+                    // 0.6초 후 아래로 떨어지기
+                    setTimeout(() => {
+                        debris.style.transition = "all 0.8s cubic-bezier(0.47, 0, 0.74, 0.71)";
+                        debris.style.left = finalX + 'px';
+                        debris.style.top = finalY + 'px';
+                        debris.style.transform = `rotate(${rot + 180}deg)`;
+                    }, 500);
+                });
+            }
+        }
+
+        function startTimer() {
+            if (!isPaused) {
+                const m = parseInt(minInput.value) || 0;
+                const s = parseInt(secInput.value) || 0;
+                timeLeft = (m * 60) + s;
+                if (timeLeft <= 0) return;
+                totalTime = timeLeft;
+            }
+
+            isPaused = false;
+            startBtn.style.display = 'none';
+            runningBtns.style.display = 'flex';
+            pauseBtn.innerText = 'PAUSE';
+            updateUI(false);
+
+            clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                if (timeLeft < 10 && timeLeft >= 0) {
+                    mainClock.classList.remove('pulse-effect');
+                    void mainClock.offsetWidth;
+                    mainClock.classList.add('pulse-effect');
+                    digitalArea.classList.add('urgent');
+                }
+                
+                if (timeLeft < 0) {
+                    clearInterval(timerInterval);
+                    explode();
+                    return;
+                }
+                
+                minInput.value = String(Math.floor(timeLeft / 60)).padStart(2, '0');
+                secInput.value = String(timeLeft % 60).padStart(2, '0');
+                updateUI(true);
+            }, 1000);
+        }
+
+        function pauseTimer() {
+            if (!isPaused) {
+                clearInterval(timerInterval);
+                isPaused = true;
+                pauseBtn.innerText = 'RESUME';
+                mainClock.classList.remove('pulse-effect');
+            } else {
+                startTimer();
+            }
+        }
+
+        function stopTimer() {
+            clearInterval(timerInterval);
+            isPaused = false;
+            timeLeft = 0;
+            totalTime = 0;
+            startBtn.style.display = 'block';
+            runningBtns.style.display = 'none';
+            minInput.value = "00";
+            secInput.value = "00";
+            
+            // 시계 복구 및 파편 제거
+            mainClock.style.visibility = 'visible';
+            document.querySelectorAll('.debris').forEach(d => d.remove());
+            mainClock.classList.remove('pulse-effect');
+            digitalArea.classList.remove('urgent');
+            updateUI(false);
+        }
+
+        updateUI(false);
+    </script>
+</body>
+</html>
