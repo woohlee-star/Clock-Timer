@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>미니멀 탁상 타이머 - 수정본</title>
+    <style>
+        :root { --bg-color: #ffffff; --accent-color: #e74c3c; --text-color: #2c3e50; --start-color: #2ecc71; }
+        body { background: var(--bg-color); display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: 'Pretendard', sans-serif; margin: 0; overflow: hidden; }
+
+        /* 아날로그 시계 영역 */
+        .clock-container { position: relative; width: 300px; height: 300px; margin-bottom: 10px; }
+        .clock-face { 
+            width: 100%; height: 100%; border: 8px solid #f8f8f8; 
+            border-radius: 50%; background: #fff; position: relative; box-sizing: border-box;
+        }
+        
+        /* 붉은색 원 (게이지) */
+        .timer-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: rotate(-90deg); pointer-events: none; }
+        .timer-svg circle { fill: none; stroke-width: 8; stroke: var(--accent-color); stroke-dashoffset: 892; /* 초기값: 둘레 */ }
+        
+        /* 시계 바늘 */
+        .hand { position: absolute; bottom: 50%; left: 50%; transform-origin: bottom; border-radius: 10px; z-index: 5; }
+        .minute-hand { width: 6px; height: 85px; background: #34495e; margin-left: -3px; transition: transform 0.3s ease-out; }
+        .second-hand { width: 2px; height: 115px; background: var(--accent-color); margin-left: -1px; z-index: 6; transition: transform 0.1s linear; }
+        .clock-face::after { content: ''; width: 12px; height: 12px; background: #34495e; border-radius: 50%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 10; }
+
+        /* 애니메이션 제거용 클래스 */
+        .no-transition { transition: none !important; }
+
+        /* 디지털 시계 (창 없이 숫자만) */
+        .digital-display { display: flex; align-items: center; justify-content: center; font-size: 3.5rem; font-weight: 800; color: var(--text-color); margin-top: 10px; }
+        .digital-display input { 
+            width: 85px; border: none; background: transparent; text-align: center; 
+            font-size: 3.5rem; font-weight: 800; outline: none; color: inherit; cursor: pointer;
+            padding: 0; margin: 0;
+        }
+        .digital-display input:hover { color: var(--accent-color); }
+
+        /* 하단 제어 버튼 */
+        .controls-area { margin-top: 30px; height: 60px; display: flex; align-items: center; justify-content: center; width: 100%; }
+        button.main-btn { 
+            border: none; border-radius: 30px; color: white; cursor: pointer; 
+            font-size: 1.1rem; font-weight: bold; transition: all 0.2s;
+        }
+        
+        #start-btn { width: 140px; height: 50px; background: var(--start-color); }
+        .running-btns { display: none; gap: 15px; }
+        #pause-btn { width: 110px; height: 50px; background: #f39c12; }
+        #stop-btn { width: 110px; height: 50px; background: #bdc3c7; color: #333; }
+        
+        button:hover { filter: brightness(1.1); transform: translateY(-2px); }
+    </style>
+</head>
+<body>
+
+    <div class="clock-container">
+        <div class="clock-face">
+            <div id="min-hand" class="hand minute-hand"></div>
+            <div id="sec-hand" class="hand second-hand"></div>
+        </div>
+        <svg class="timer-svg">
+            <circle id="progress-circle" cx="150" cy="150" r="142"></circle>
+        </svg>
+    </div>
+
+    <div class="digital-display">
+        <input type="text" id="input-min" value="00" maxlength="2">
+        <span>:</span>
+        <input type="text" id="input-sec" value="00" maxlength="2">
+    </div>
+
+    <div class="controls-area">
+        <button id="start-btn" class="main-btn" onclick="startTimer()">START</button>
+        <div id="running-btns" class="running-btns">
+            <button id="pause-btn" class="main-btn" onclick="pauseTimer()">PAUSE</button>
+            <button id="stop-btn" class="main-btn" onclick="stopTimer()">STOP</button>
+        </div>
+    </div>
+
+    <script>
+        let timeLeft = 0;
+        let totalTime = 0;
+        let timerInterval = null;
+        let isPaused = false;
+
+        const minInput = document.getElementById('input-min');
+        const secInput = document.getElementById('input-sec');
+        const minHand = document.getElementById('min-hand');
+        const secHand = document.getElementById('sec-hand');
+        const progressCircle = document.getElementById('progress-circle');
+        const startBtn = document.getElementById('start-btn');
+        const runningBtns = document.getElementById('running-btns');
+        const pauseBtn = document.getElementById('pause-btn');
+
+        const radius = progressCircle.r.baseVal.value;
+        const circumference = 2 * Math.PI * radius;
+        progressCircle.style.strokeDasharray = circumference;
+        progressCircle.style.strokeDashoffset = circumference;
+
+        // --- 입력 로직 ---
+        function formatValue(input) {
+            let val = parseInt(input.value) || 0;
+            if (val > 59 && input === secInput) val = 59;
+            input.value = String(val).padStart(2, '0');
+            updateUI(false); // 수동 입력 시 애니메이션 없이 업데이트
+        }
+
+        [minInput, secInput].forEach(input => {
+            input.addEventListener('click', () => input.select());
+            input.addEventListener('blur', () => formatValue(input));
+            input.addEventListener('input', () => {
+                input.value = input.value.replace(/[^0-9]/g, '');
+                updateUI(false);
+            });
+            input.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                let current = parseInt(input.value) || 0;
+                e.deltaY < 0 ? current++ : current--;
+                if (current < 0) current = 0;
+                if (input === secInput && current > 59) current = 59;
+                input.value = String(current).padStart(2, '0');
+                updateUI(false);
+            });
+        });
+
+        // --- UI 업데이트 핵심 (바늘 튀는 현상 방지) ---
+        function updateUI(useTransition = true) {
+            const m = parseInt(minInput.value) || 0;
+            const s = parseInt(secInput.value) || 0;
+            const currentTime = (m * 60) + s;
+
+            if (!useTransition) {
+                minHand.classList.add('no-transition');
+                secHand.classList.add('no-transition');
+                progressCircle.style.transition = 'none';
+            } else {
+                minHand.classList.remove('no-transition');
+                secHand.classList.remove('no-transition');
+                progressCircle.style.transition = 'stroke-dashoffset 1s linear';
+            }
+
+            // 바늘 각도 계산
+            minHand.style.transform = `rotate(${(m * 6) + (s * 0.1)}deg)`;
+            secHand.style.transform = `rotate(${s * 6}deg)`;
+
+            // 붉은 원 게이지 계산
+            if (totalTime > 0) {
+                const offset = circumference - (currentTime / totalTime) * circumference;
+                progressCircle.style.strokeDashoffset = offset;
+            } else {
+                progressCircle.style.strokeDashoffset = circumference;
+            }
+
+            // 강제 리플로우로 애니메이션 즉시 적용 방지
+            if (!useTransition) {
+                void minHand.offsetWidth; 
+                minHand.classList.remove('no-transition');
+                secHand.classList.remove('no-transition');
+            }
+        }
+
+        // --- 타이머 제어 ---
+        function startTimer() {
+            if (!isPaused) {
+                const m = parseInt(minInput.value) || 0;
+                const s = parseInt(secInput.value) || 0;
+                timeLeft = (m * 60) + s;
+                if (timeLeft <= 0) return;
+                totalTime = timeLeft;
+            }
+
+            isPaused = false;
+            startBtn.style.display = 'none';
+            runningBtns.style.display = 'flex';
+            pauseBtn.innerText = 'PAUSE';
+
+            // 시작 버튼 누르자마자 현재 상태를 애니메이션 없이 즉시 반영 (붉은 원 나타남)
+            updateUI(false);
+
+            clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                if (timeLeft < 0) {
+                    clearInterval(timerInterval);
+                    alert("시간이 종료되었습니다!");
+                    stopTimer();
+                    return;
+                }
+                
+                // 남은 시간을 입력창에 업데이트하고 바늘 이동
+                minInput.value = String(Math.floor(timeLeft / 60)).padStart(2, '0');
+                secInput.value = String(timeLeft % 60).padStart(2, '0');
+                updateUI(true);
+            }, 1000);
+        }
+
+        function pauseTimer() {
+            if (!isPaused) {
+                clearInterval(timerInterval);
+                isPaused = true;
+                pauseBtn.innerText = 'RESUME';
+            } else {
+                startTimer();
+            }
+        }
+
+        function stopTimer() {
+            clearInterval(timerInterval);
+            isPaused = false;
+            timeLeft = 0;
+            totalTime = 0;
+            startBtn.style.display = 'block';
+            runningBtns.style.display = 'none';
+            minInput.value = "00";
+            secInput.value = "00";
+            updateUI(false); // 즉시 00:00으로 리셋
+        }
+
+        // 초기화
+        updateUI(false);
+    </script>
+</body>
+</html>
